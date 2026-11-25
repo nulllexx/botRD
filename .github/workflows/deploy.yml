@@ -107,6 +107,22 @@ jobs:
           echo "ref=ghcr.io/${GITHUB_REPOSITORY,,}:$TAG" >> "$GITHUB_OUTPUT"
           echo "Deploying ghcr.io/${GITHUB_REPOSITORY,,}:$TAG" >> "$GITHUB_STEP_SUMMARY"
 
+      # scp-action runs its own `mkdir -p` and only reports "exit status 1" when that fails,
+      # so create the folders here first, where a failure shows who we are and why.
+      - name: Prepare deploy folder
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.REMOTE_SSH_KEY }}
+          port: 2222
+          script: |
+            if mkdir -p /home/useradmin/botrd/data; then exit 0; fi
+            echo "::error::Could not create /home/useradmin/botrd as $(whoami). REMOTE_USER must be useradmin, or a user with write access to /home/useradmin."
+            id
+            ls -ld /home/useradmin /home/useradmin/botrd /home/useradmin/botrd/data 2>&1
+            exit 1
+
       - name: Copy docker-compose.yml via SCP
         uses: appleboy/scp-action@v0.1.7
         with:
