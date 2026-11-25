@@ -1,13 +1,27 @@
 name: Test, build and deploy botRD
 
-# Tests run on every branch; only main builds the image and deploys.
+# Pushes: tests run on every branch; only main builds the image and deploys.
+# Manual runs (Actions → "Run workflow"): test, build and deploy the chosen branch,
+# or, with image_tag set, redeploy an image that was already built, without testing or building.
 on:
   push:
     branches: ["**"]
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Redeploy an existing image instead of building: a full commit SHA, or 'latest'. Leave empty to build the chosen branch."
+        required: false
+        default: ""
+
+# One deploy at a time; a newer run waits rather than racing the one in progress.
+# Test-only runs (pushes to other branches) get their own group, so they never queue.
+concurrency:
+  group: ${{ (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && 'deploy' || format('test-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 jobs:
   test:
+    if: inputs.image_tag == ''
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -25,21 +39,27 @@ jobs:
 
   build-and-push:
     needs: test
-    if: github.ref == 'refs/heads/main'
+    if: inputs.image_tag == '' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    outputs:
-      image: ${{ steps.image.outputs.name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # GHCR image names must be lowercase; the repository name isn't.
-      - name: Image name
+      # Only main moves :latest, so a manual deploy of another branch never becomes the default image.
+      - name: Image tags
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        run: |
+          name="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo "tags<<EOF"
+            echo "$name:$GITHUB_SHA"
+            if [ "$GITHUB_REF" = "refs/heads/main" ]; then echo "$name:latest"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -56,18 +76,36 @@ jobs:
         with:
           context: .
           push: true
-          tags: |
-            ${{ steps.image.outputs.name }}:latest
-            ${{ steps.image.outputs.name }}:${{ github.sha }}
+          tags: ${{ steps.image.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   deploy:
     needs: build-and-push
+    # Runs after a successful build, or on its own for a manual redeploy (build is skipped then).
+    if: >-
+      !cancelled() && (
+        needs.build-and-push.result == 'success' ||
+        (github.event_name == 'workflow_dispatch' && inputs.image_tag != '')
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository (for deploy/docker-compose.yml)
         uses: actions/checkout@v4
+
+      # Deploy the exact commit's image rather than :latest, so what runs is what was built.
+      # The input goes through env, never straight into the script, and must look like a tag.
+      - name: Image to deploy
+        id: image
+        env:
+          TAG: ${{ inputs.image_tag || github.sha }}
+        run: |
+          if ! [[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::'$TAG' is not a valid image tag"
+            exit 1
+          fi
+          echo "ref=ghcr.io/${GITHUB_REPOSITORY,,}:$TAG" >> "$GITHUB_OUTPUT"
+          echo "Deploying ghcr.io/${GITHUB_REPOSITORY,,}:$TAG" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Copy docker-compose.yml via SCP
         uses: appleboy/scp-action@v0.1.7
@@ -84,7 +122,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          BOTRD_IMAGE: ${{ needs.build-and-push.outputs.image }}:latest
+          BOTRD_IMAGE: ${{ steps.image.outputs.ref }}
         with:
           host: ${{ secrets.REMOTE_HOST }}
           username: ${{ secrets.REMOTE_USER }}
