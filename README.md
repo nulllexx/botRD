@@ -2,19 +2,6 @@
 
 A Discord forum gatekeeper written in Rust and built to use very little memory: it runs as one small native binary on a single thread and uses about 6 MB of RAM
 
-## Setup
-
-1. Create an application at <https://discord.com/developers/applications>. Under **Bot**:
-   - copy the token into `.env` (see `.env.example`)
-   - turn on **Message Content Intent**, which the bot needs to read a new post's body. Without it, the bot exits with a 4014 error
-2. Invite the bot. Replace `APP_ID` with your application ID:
-   `https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot+applications.commands&permissions=292326280256`
-   (View Channel, Send Messages, Send Messages in Threads, Add Reactions, Read Message History, Manage Roles, Manage Threads)
-3. Build it with `cargo build --release` (needs [Rust](https://rustup.rs)), then run `./target/release/botrd` from the folder that holds `.env`.
-   The binary is self-contained, so you can copy it to a server that doesn't have Rust installed.
-
-Only members with **Manage Server** can see or use the commands. Server admins can change that under Server Settings → Integrations.
-
 ## Commands
 
 | Command | What it does |
