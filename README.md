@@ -1,6 +1,6 @@
 # botRD
 
-A Discord forum gatekeeper written in Rust and built to use very little memory: it runs as one small native binary on a single thread and uses about 6 MB of RAM (the earlier Node version, still here as `bot.js`, used about 75 MB).
+A Discord forum gatekeeper written in Rust and built to use very little memory: it runs as one small native binary on a single thread and uses about 6 MB of RAM
 
 ## Setup
 
