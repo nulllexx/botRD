@@ -1,0 +1,132 @@
+name: Test, build and deploy botRD
+
+# Tests run on every branch; only main builds the image and deploys.
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # The #[ignore]d test talks to Discord's live API, so it stays out of CI.
+      - name: Tests
+        run: cargo test --locked
+
+  build-and-push:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # GHCR image names must be lowercase; the repository name isn't.
+      - name: Image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (for deploy/docker-compose.yml)
+        uses: actions/checkout@v4
+
+      - name: Copy docker-compose.yml via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.REMOTE_SSH_KEY }}
+          port: 2222
+          source: "deploy/docker-compose.yml"
+          target: "/home/useradmin/botrd/"
+          strip_components: 1
+
+      - name: Deploy to Linux machine via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          BOTRD_IMAGE: ${{ needs.build-and-push.outputs.image }}:latest
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.REMOTE_SSH_KEY }}
+          port: 2222
+          envs: DISCORD_TOKEN,BOTRD_IMAGE
+          script: |
+            set -e
+            mkdir -p /home/useradmin/botrd/data
+            cd /home/useradmin/botrd/
+
+            # An empty token would only make the bot exit on start and restart forever.
+            if [ -z "$DISCORD_TOKEN" ]; then
+              echo "::error::DISCORD_TOKEN secret is empty. Set it under Settings > Secrets and variables > Actions."
+              exit 1
+            fi
+
+            # Durable, so a human running docker-compose here later resolves the same image and token.
+            umask 077
+            printf 'BOTRD_IMAGE=%s\nDISCORD_TOKEN=%s\n' "$BOTRD_IMAGE" "$DISCORD_TOKEN" > .env
+
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker-compose pull bot
+            # Always a fresh container, so the log check below only sees this deploy's output.
+            docker-compose up -d --force-recreate bot
+            docker logout ghcr.io
+
+            # The bot serves nothing to probe, so wait for it to log in to Discord instead.
+            # Fail the deploy, with the logs, if it doesn't.
+            for i in $(seq 1 30); do
+              if docker logs botrd 2>&1 | grep -q '^Logged in as '; then
+                docker logs botrd 2>&1 | grep '^Logged in as '
+                echo "botRD is up"
+                exit 0
+              fi
+              state="$(docker inspect -f '{{.State.Status}} {{.RestartCount}}' botrd)"
+              case "$state" in
+                "running 0") ;;
+                *) echo "::error::botRD is not staying up (state: $state)"; docker logs --tail 50 botrd; exit 1 ;;
+              esac
+              sleep 1
+            done
+            echo "::error::botRD did not log in to Discord within 30s"
+            docker logs --tail 50 botrd
+            exit 1

@@ -1,0 +1,39 @@
+# botRD, as its own compose project in /home/useradmin/botrd/.
+#
+# Deliberately not a service in apiRD's docker-compose.yml: apiRD's deploy copies its own compose
+# file over /home/useradmin/docker/docker-compose.yml on every push, which would drop this service.
+#
+# BOTRD_IMAGE and DISCORD_TOKEN come from the .env next to this file, written by the deploy workflow.
+services:
+  bot:
+    image: ${BOTRD_IMAGE}
+    container_name: botrd
+    restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DATA_FILE=/data/data.json
+    volumes:
+      - /home/useradmin/botrd/data:/data
+    # The bot only connects out to Discord; it listens on nothing, so no ports.
+    # It only ever writes data.json (via data.json.tmp) under /data, so everything else is read-only.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # /data belongs to the host user; the container's root needs this to write data.json there.
+      - DAC_OVERRIDE
+    # The bot has no SIGTERM handler, and PID 1 ignores signals it doesn't handle, so without an
+    # init every stop would wait out the grace period and end in SIGKILL. With tini as PID 1 the
+    # bot gets the default SIGTERM action and exits at once. Settings are written atomically
+    # (tmp + rename), so stopping it never leaves a half-written data.json.
+    init: true
+    stop_grace_period: 5s
+    # ~6 MB in practice; the cap only guards the host against a runaway.
+    mem_limit: 64m
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"

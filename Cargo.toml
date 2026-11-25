@@ -1,0 +1,26 @@
+[package]
+name = "botrd"
+version = "2.0.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "macros", "sync"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std"] }
+webpki-roots = "1"
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+socket2 = "0.6"
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
